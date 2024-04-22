@@ -1,0 +1,172 @@
+---
+title: "STAT447C Final Report"
+output: pdf_document
+date: "2024-04-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include = FALSE}
+# required libraries and loading in the dataset
+library(readr)
+library(glmnet)
+library(distr)
+require(rstan)
+cars <- read_csv("/Users/ayushbharat/UBC/STAT447C/bayesian-analysis/car_data.csv")
+
+```
+## Introduction
+
+In the world of statistics there are two major approaches to statistical inference problems. One of them is the frequentist paradigm. The frequentist paradigm is based on collecting data to create a probability distribution that allows for inference about the hypothesis. In essence, frequentist inference involves making conclusions about a hypothesis based solely on the observed data, without incorporating prior beliefs or subjective judgments. The bayesian paradigms on the other hand is based on using data to augment previously held beliefs about a hypothesis (1). This approach combines Both prior knowledge about the problem and the evidence to construct a probability model on the unknown. 
+
+In practice determining which method to use can be challenging. The majority of research papers have been done with frequentist methods although the use of bayesian statistics has been increasing (2). Bayesian methods do however introduce more subjectivity into the analysis, choice of prior subject to subjectivity and this can have negative consequences on the analysis. 
+
+This report will focus on binary classification problems as a means of comparing the bayesian vs frequentist paradigms. We will compare a well established frequentist based method for binary classification with a custom built bayesian model. We will aim to exploit the structure of the dataset and previously held beliefs to maximize accuracy. In order to prevent biasing the results we will set aside a test set and use the test set accuracy as a means of quantifying the effectiveness of frequentist vs bayesian models.
+
+## What this report aims to achieve
+
+This report will use a dataset found on kaggle (3) that contains data on car purchase descisons found on the internet. This dataset includes the gender, age and annual salary of 1000 customers who intend to buy a car. The target variable is the binary variable Purchased, with 1 indicating a purchase and 0 indicating not purchased. For our frequentist baseline, we will fit a logistic regression model to the data. We will use L2 regularization to minimize overfitting the model and make it less sensitive to outliers. Moreover, there is a connection between L2 regularized logistic regression and bayesian logistic regression; L2 regularized regression can be shown to be equivalent to a using bayesian methods with a gaussian prior (4). A well constructed prior in our bayesian model should also serve to reduce the impact of outliers and limit overfitting. With this report, we aim to add to the discussion on bayesian vs frequentist methods
+
+
+
+
+
+## Fitting the logistic regression model
+
+```{r}
+head(cars)
+```
+```{r include=FALSE}
+#split the data into a training set and a testing set
+training_set <- cars[1:800, ]
+test_set <- cars[801:1000, ]
+X_train <- as.matrix(training_set[,3:4])
+y_train <- as.matrix(training_set[,5])
+X_test <- as.matrix(training_set[,3:4])
+y_test <- as.matrix(training_set[,5])
+```
+
+Below is the code for training the l2 regularized logistic regression using the glmnet library, 10 fold cross validation is used to select the regularization penalty.
+```{r}
+# cross validation and logistic regression using the glmnet library: https://glmnet.stanford.edu/articles/glmnet.html#logistic-regression-family-binomial
+cv_object <- cv.glmnet(x = X_train, y = y_train, family = "binomial", alpha = 0)
+lambda_optimal <- cv_object$lambda.min
+fitted_model <- glmnet(x = X_train, y = y_train, family = "binomial", alpha = 0, lambda = lambda_optimal)
+coef(fitted_model, s = lambda_optimal)
+predictions <- predict(cv_object, newx = X_test, s = "lambda.min", type = "response")
+
+# Convert predictions to binary labels (0 or 1)
+predicted_labels <- as.numeric(predictions > 0.5)
+
+# Compute test accuracy
+test_accuracy <- mean(predicted_labels == y_test)
+print(test_accuracy)
+```
+Here we see that the model acheives a test set accuracy of 0.84.
+
+## Fitting the Bayesian Model
+
+We will use Bayesian logistic regression for our Bayesian model. There is a connection between L2 regularized logistic regression and bayseian regression with Gaussian priors(4).
+
+There seems to be a trend with higher ages and salaries predicting a positive purchase decision. I will use the coefficients of the frequentist baseline along with small variances to set up an opinionated4ed prior based on the data.
+
+Bayesian model:
+
+slope_age ~ N(0.1400688, 0.001)  
+slope_Annual_Salary ~ N(0.00002153042, 0.000001)  
+intercept ~ N(-7.775312, 0.1)  
+theta(age, annual_salary) = logistic(slope_Annual_Salary * annual_salary + slope_age * age + intercept)  
+
+Y ~ Bernuolli(theta(age, annual_salary))  
+
+
+```{r message = FALSE, warning = FALSE}
+# calculating the posterior distribution using stan
+setwd("/Users/ayushbharat/UBC/STAT447C/bayesian-analysis") #Change this to the directory that includes the stan file
+
+# compile the model
+file_name <- "model.stan"
+car_model <- stan_model(file = file_name)
+
+fit = sampling(
+car_model,
+data = list(age = X_train[,1], salary = X_train[,2], ys = y_train[,1], N = length(y_train), N_test = length(y_test), 
+            x_pred_age = X_test[,1], x_pred_salary = X_test[,1], y_test = y_test[,1]),
+show_messages = FALSE,
+open_progress = FALSE,
+chains = 1,
+iter = 2000)
+
+```
+```{r}
+samples = extract(fit)
+mean(samples$test_accuracy)
+```
+
+Our Bayesian model attains the above test accuracy. Running the model at higher iterations seems to improve our test score(~0.65 at 10000 iterations), however it also drastically increases training time.
+
+
+## Limations
+
+The prior choice was not evaluated, so it is difficult to say whether the lower test score from the bayesian model was due to a mispecified prior or model. Moreover, there is no evaluation of the approximated posterior distribution. 
+
+## Appendix/Citations
+
+1) Hackenberger BK. Bayes or not Bayes, is this the question? Croat Med J. 2019 Feb 28;60(1):50-52. doi: 10.3325/cmj.2019.60.50. PMID: 30825279; PMCID: PMC6406060.
+
+(2) van de Schoot, R., Kaplan, D., Denissen, J., Asendorpf, J. B., Neyer, F. J., & van Aken, M. A. G. (2014). A gentle introduction to bayesian analysis: applications to developmental research. Child development, 85(3), 842–860. https://doi.org/10.1111/cdev.12169
+
+(3) https://www.kaggle.com/datasets/gabrielsantello/cars-purchase-decision-dataset 
+
+(4) Figueiredo, Mário. (2001). Adaptive Sparseness Using Jeffreys Prior. 697-704. 
+
+
+#Stan code:
+
+data {  
+	int<lower=0> N;  
+	int<lower=0> N_test;  
+	vector[N] age;  
+	vector[N] salary;  
+	int<lower=0, upper=1> ys[N];  
+	vector[N_test] x_pred_age;  
+	vector[N_test] x_pred_salary;  
+	int<lower=0, upper=1> y_test[N_test]; // Actual outcomes for the test data  
+}  
+
+parameters {  
+	real slope_age;  
+	real slope_salary;  
+	real intercept;  
+}  
+
+model {  
+	// prior  
+	slope_age ~ normal(0.1400688, 0.001);  
+	slope_salary ~ normal(0.00002153042, 0.000001);  
+	intercept ~ normal(-7.775312, 0.1);  
+	
+	for (n in 1:N) {  
+  		ys[n] ~ bernoulli_logit(intercept + slope_age * age[n] + slope_salary * salary[n]);  
+	}  
+}  
+
+generated quantities {  
+  vector[N_test] y_pred;  
+  real test_accuracy = 0.0;  
+  
+  for (i in 1:N_test) {  
+    y_pred[i] = bernoulli_logit_rng(intercept + slope_age * x_pred_age[i] + slope_salary * x_pred_salary[i]);  
+    // Compute test accuracy  
+    if (y_pred[i] == y_test[i]) {  
+      test_accuracy += 1.0 / N_test;  
+    }  
+  }  
+}  
+
+
+
+
+
